@@ -47,6 +47,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body { margin: 0; }
 
@@ -270,7 +271,6 @@ dialog::backdrop { background: rgba(10, 15, 25, .5); }
   display: grid; place-items: center;
 }
 .fab svg { width: 26px; height: 26px; }
-.fab[hidden] { display: none; }
 @media (prefers-color-scheme: dark) { .fab { color: #0b1220; } }
 
 #toast {
@@ -286,3 +286,27 @@ dialog::backdrop { background: rgba(10, 15, 25, .5); }
 .empty h2 { color: var(--text); font-size: 20px; margin-bottom: 8px; }
 .empty .actions { justify-content: center; }
 .empty-inline { padding: 14px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: var(--radius); }
+
+/* ---------- Mode partagé ---------- */
+.gated .tabbar, .gated .fab, .gated .topbar a.icon-btn { display: none; }
+.gated main { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
+.auth { max-width: 420px; margin: 8px auto 0; text-align: center; }
+.auth h2 { font-size: 22px; margin-bottom: 6px; }
+.auth form { text-align: left; margin-top: 4px; }
+.auth form .btn + .btn { margin-top: 8px; }
+.auth-logo img { border-radius: 16px; }
+.invite-code {
+  margin: 10px 0 0; padding: 12px; border-radius: 12px; background: var(--primary-soft); color: var(--primary);
+  text-align: center; font: 700 26px/1.2 ui-monospace, "SFMono-Regular", Menlo, monospace; letter-spacing: .18em;
+}
+.code-input { text-transform: uppercase; letter-spacing: .15em; font-family: ui-monospace, Menlo, monospace; }
+.check-line { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 12px; font-size: 14px; }
+.check-line input { flex: none; margin-top: 2px; }
+.role-select { width: auto; min-height: 36px; padding: 4px 8px; font-size: 13px; }
+.danger-text { color: var(--late); }
+.spinner {
+  width: 36px; height: 36px; margin: 24px auto 12px; border-radius: 50%;
+  border: 3px solid var(--surface-2); border-top-color: var(--primary); animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.btn:disabled { opacity: .6; cursor: progress; }

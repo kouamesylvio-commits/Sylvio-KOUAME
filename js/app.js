@@ -58,7 +58,17 @@
     return emptyState();
   }
 
+  // Mode « local » : données sur l'appareil. Mode « cloud » : données partagées via Firebase (js/cloud.js).
+  const MODE_KEY = 'suivi-objectifs:mode';
+  const CLOUD_CONFIG = window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.apiKey ? window.FIREBASE_CONFIG : null;
+  const readMode = () => { try { return localStorage.getItem(MODE_KEY); } catch (e) { return null; } };
+  const writeMode = (m) => { try { localStorage.setItem(MODE_KEY, m); } catch (e) { /* ignoré */ } };
+  let mode = CLOUD_CONFIG && readMode() === 'cloud' ? 'cloud' : 'local';
+  let cloud = null;
+  let cloudModule = null;
+
   function save() {
+    if (mode === 'cloud') { if (cloud) cloud.push(state); return; }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (e) {
@@ -66,8 +76,14 @@
     }
   }
 
-  let state = load();
-  const ui = { objFilter: 'active', taskFilter: { q: '', status: 'open', assignee: '', objective: '' } };
+  let state = mode === 'cloud' ? emptyState() : load();
+  const ui = { objFilter: 'active', authMode: 'signin', taskFilter: { q: '', status: 'open', assignee: '', objective: '' } };
+
+  // Actions réservées aux administrateurs en mode partagé (les membres mettent à jour l'avancement).
+  const ADMIN_ACTIONS = new Set(['new-objective', 'edit-objective', 'archive-objective', 'delete-objective', 'new-task', 'edit-task',
+    'delete-task', 'new-person', 'edit-person', 'delete-person', 'new-team', 'edit-team', 'delete-team', 'sample', 'reset', 'import']);
+  const canManage = () => mode !== 'cloud' || !!cloud?.isAdmin;
+  const myPerson = () => (mode === 'cloud' && cloud?.user ? state.people.find((p) => p.uid === cloud.user.uid) || null : null);
 
   // ------------------------------------------------------------------
   // Accès aux données & calculs
@@ -160,7 +176,9 @@
     t.progress = progress;
     t.status = status;
     t.updatedAt = new Date().toISOString();
-    t.history.push({ at: t.updatedAt, progress, status, note: (note || '').trim() });
+    const entry = { at: t.updatedAt, progress, status, note: (note || '').trim() };
+    if (mode === 'cloud' && cloud?.user) entry.by = cloud.user.displayName || cloud.user.email;
+    t.history.push(entry);
   }
 
   // ------------------------------------------------------------------
@@ -285,6 +303,10 @@
   // Vues
   // ------------------------------------------------------------------
   function viewWelcome() {
+    if (!canManage()) {
+      return `<div class="empty"><h2>Bienvenue 👋</h2>
+        <p>Aucun objectif n'a encore été créé dans cet espace. Les objectifs et tâches définis par l'administrateur apparaîtront ici automatiquement.</p></div>`;
+    }
     return `<div class="empty">
       <h2>Bienvenue 👋</h2>
       <p>Créez vos objectifs, découpez-les en tâches, assignez-les à des personnes ou à des équipes, puis suivez l'avancement au jour le jour.</p>
@@ -305,6 +327,8 @@
     const blocked = tasks.filter((t) => t.status === 'blocked');
     const avg = active.length ? Math.round(active.reduce((s, o) => s + weightedPct(tasksOf(o.id)), 0) / active.length) : 0;
     const alerts = sortTasks([...new Set([...blocked, ...late])]);
+    const me = myPerson();
+    const myOpen = me ? sortTasks(tasksForPerson(me.id).filter((t) => isActiveTask(t) && t.status !== 'done')) : [];
 
     const perf = [
       ...state.teams.map((e) => ({ entity: e, kind: 'team', tasks: tasksForTeam(e.id).filter(isActiveTask) })),
@@ -323,6 +347,11 @@
         <div class="kpi"><b>${done}/${tasks.length}</b><span>Tâches terminées</span></div>
         <div class="kpi ${late.length ? 'alert' : ''}"><b>${late.length}</b><span>Tâches en retard</span></div>
       </section>
+
+      ${me ? `<section>
+        <h2 class="section-title">Mes tâches (${myOpen.length}) <a class="muted" href="#/taches" data-action="my-tasks">Tout voir</a></h2>
+        ${myOpen.length ? taskList(myOpen.slice(0, 5)) : '<div class="empty-inline">Aucune tâche en cours pour vous. 🎉</div>'}
+      </section>` : ''}
 
       <section>
         <h2 class="section-title">Objectifs en cours <a class="muted" href="#/objectifs">Tout voir</a></h2>
@@ -344,6 +373,7 @@
         <div class="card"><ul class="timeline">${activity.map(({ t, h }) => `
           <li><div class="when">${fmtDateTime(h.at)}</div>
           <div class="what"><a href="#/tache/${t.id}">${esc(t.title)}</a> → ${h.progress}% · ${STATUS[h.status]}</div>
+          ${h.by ? `<div class="when">par ${esc(h.by)}</div>` : ''}
           ${h.note ? `<div class="note muted">${esc(h.note)}</div>` : ''}</li>`).join('')}
         </ul></div>
       </section>` : ''}`;
@@ -420,6 +450,7 @@
         </select>
         <select id="f-assignee" aria-label="Assignée à">
           <option value="">Tout le monde</option>
+          ${myPerson() ? '<option value="me">Mes tâches</option>' : ''}
           ${assigneeOptions()}
         </select>
         <select class="full" id="f-objective" aria-label="Objectif">
@@ -449,7 +480,10 @@
     const f = ui.taskFilter;
     let ts = state.tasks.filter(isActiveTask);
     if (f.objective) ts = ts.filter((t) => t.objectiveId === f.objective);
-    if (f.assignee) {
+    if (f.assignee === 'me') {
+      const me = myPerson();
+      ts = me ? ts.filter((t) => tasksForPerson(me.id).includes(t)) : [];
+    } else if (f.assignee) {
       const [type, id] = f.assignee.split(':');
       ts = ts.filter((t) => (type === 'team' ? tasksForTeam(id) : tasksForPerson(id)).includes(t));
     }
@@ -490,7 +524,7 @@
         <h2 class="section-title">Historique de l'avancement</h2>
         ${t.history.length ? `<div class="card"><ul class="timeline">${[...t.history].reverse().map((h) => `
           <li><div class="when">${fmtDateTime(h.at)}</div>
-          <div class="what">${h.progress}% · ${STATUS[h.status]}</div>
+          <div class="what">${h.progress}% · ${STATUS[h.status]}${h.by ? ` <span class="muted">· par ${esc(h.by)}</span>` : ''}</div>
           ${h.note ? `<div class="note">${esc(h.note)}</div>` : ''}</li>`).join('')}
           <li><div class="when">${fmtDateTime(t.createdAt)}</div><div class="what">Tâche créée</div></li>
         </ul></div>` : '<div class="empty-inline">Aucune mise à jour pour le moment. Utilisez « Mettre à jour l\'avancement » pour garder une trace de la progression.</div>'}
@@ -583,9 +617,18 @@
       ${deferredInstall ? `<section class="card"><h3>Installer l'application</h3>
         <p class="muted">Ajoutez l'application à l'écran d'accueil de votre téléphone pour l'ouvrir comme une application classique, même sans connexion.</p>
         <div class="actions"><button class="btn primary" data-action="install">Installer</button></div></section>` : ''}
+      ${mode === 'cloud' ? cloudSettings() : `<section class="card">
+        <h3>Travailler en équipe</h3>
+        ${CLOUD_CONFIG
+          ? `<p class="muted">Activez la synchronisation pour partager les objectifs avec votre équipe : chaque membre se connecte sur son téléphone et met à jour ses propres tâches.</p>
+             <div class="actions"><button class="btn primary" data-action="cloud-enable">Activer la synchronisation</button></div>`
+          : '<p class="muted">La synchronisation entre téléphones n\'est pas encore configurée pour cette installation (voir le fichier README, section « Synchronisation »).</p>'}
+      </section>`}
       <section class="card">
-        <h3>Sauvegarde et partage</h3>
-        <p class="muted">Les données (${counts}) sont enregistrées uniquement sur cet appareil. Exportez-les régulièrement pour les sauvegarder ou les transférer sur un autre téléphone.</p>
+        <h3>Sauvegarde</h3>
+        <p class="muted">${mode === 'cloud'
+          ? `Les données de l'espace (${counts}) sont enregistrées en ligne et restent consultables hors connexion. Vous pouvez aussi en exporter une copie.`
+          : `Les données (${counts}) sont enregistrées uniquement sur cet appareil. Exportez-les régulièrement pour les sauvegarder ou les transférer sur un autre téléphone.`}</p>
         <div class="actions">
           <button class="btn" data-action="export">Exporter (.json)</button>
           <button class="btn" data-action="import">Importer…</button>
@@ -605,6 +648,158 @@
     return { title: 'Réglages', html, back: true };
   }
 
+  function cloudSettings() {
+    const ws = cloud.workspace;
+    const others = Object.entries(cloud.profile.workspaces || {}).filter(([id]) => id !== ws.id);
+    const admin = cloud.isAdmin;
+    return `
+      <section class="card">
+        <h3>Mon compte</h3>
+        <div class="meta">${esc(cloud.user.displayName || '')} · ${esc(cloud.user.email)}</div>
+        <div class="meta">Rôle dans « ${esc(ws.name)} » : <b>${admin ? 'Administrateur' : 'Membre'}</b></div>
+        ${!myPerson() ? `<p class="muted">${admin
+          ? 'Astuce : liez votre compte à votre fiche dans l\'onglet Équipe pour retrouver « Mes tâches ».'
+          : 'Demandez à un administrateur de lier votre compte à votre fiche pour retrouver « Mes tâches ».'}</p>` : ''}
+        <div class="actions"><button class="btn" data-action="cloud-signout">Se déconnecter</button></div>
+      </section>
+      <section class="card">
+        <div class="row"><h3>Espace : ${esc(ws.name)}</h3>${admin ? '<button class="btn sm" data-action="cloud-rename">Renommer</button>' : ''}</div>
+        ${admin ? `<p class="muted">Pour inviter quelqu'un, transmettez-lui ce code. Il le saisira après avoir créé son compte dans l'application.</p>
+          <div class="invite-code">${esc(ws.inviteCode || '')}</div>
+          <div class="actions">
+            <button class="btn primary" data-action="cloud-share-invite">Partager l'invitation</button>
+            <button class="btn" data-action="cloud-new-code">Nouveau code</button>
+          </div>` : ''}
+        <h2 class="section-title" style="margin-top:16px">Membres (${cloud.members.length})</h2>
+        <div class="stack">${cloud.members.map((m) => {
+          const linked = state.people.find((p) => p.uid === m.uid);
+          const self = m.uid === cloud.user.uid;
+          return `<div class="list-row">
+            <div class="grow">
+              <div class="name">${esc(m.displayName || m.email)}${self ? ' <span class="muted">(vous)</span>' : ''}</div>
+              <div class="meta">${esc(m.email)}${linked ? ` · fiche : ${esc(linked.name)}` : ' · aucune fiche liée'}</div>
+            </div>
+            ${admin && !self
+              ? `<select class="role-select" data-member-role="${esc(m.uid)}" aria-label="Rôle">
+                   <option value="membre" ${m.role === 'membre' ? 'selected' : ''}>Membre</option>
+                   <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option>
+                 </select>
+                 <button class="icon-btn danger-text" data-action="cloud-remove-member" data-id="${esc(m.uid)}" aria-label="Retirer">✕</button>`
+              : `<span class="badge">${m.role === 'admin' ? 'Admin' : 'Membre'}</span>`}
+          </div>`;
+        }).join('')}</div>
+        <div class="actions">
+          ${others.map(([id, name]) => `<button class="btn" data-action="cloud-switch" data-id="${esc(id)}">Ouvrir « ${esc(name)} »</button>`).join('')}
+          <a class="btn" href="#/espace">Créer ou rejoindre un espace</a>
+          <button class="btn danger" data-action="cloud-leave">Quitter cet espace</button>
+        </div>
+      </section>
+      <section class="card">
+        <h3>Mode hors équipe</h3>
+        <p class="muted">Revenir aux données enregistrées uniquement sur cet appareil. Les données de l'espace restent en ligne.</p>
+        <div class="actions"><button class="btn" data-action="cloud-disable">Utiliser sans compte</button></div>
+      </section>`;
+  }
+
+  // ---------- Écrans du mode partagé : chargement, connexion, choix de l'espace ----------
+  function viewCloudGate() {
+    if (!cloud || cloud.status === 'loading') {
+      return { title: "Suivi d'Objectifs", gated: true, html: '<div class="empty"><div class="spinner" aria-hidden="true"></div><p>Chargement…</p></div>' };
+    }
+    if (cloud.status === 'signedOut') return viewAuth();
+    return viewWorkspaceSetup();
+  }
+
+  function viewAuth() {
+    const signup = ui.authMode === 'signup';
+    const seg = (key, label) => `<button type="button" data-action="cloud-auth-mode" data-value="${key}" aria-pressed="${ui.authMode === key}">${label}</button>`;
+    const html = `
+      <div class="auth">
+        <div class="auth-logo"><img src="icons/icon.svg" alt="" width="64" height="64"></div>
+        <h2>Suivi d'Objectifs</h2>
+        <p class="muted">Connectez-vous pour suivre les objectifs de votre équipe et mettre à jour vos tâches depuis votre téléphone.</p>
+        <div class="segmented">${seg('signin', 'Se connecter')}${seg('signup', 'Créer un compte')}</div>
+        <form id="auth-form" class="card" novalidate>
+          ${signup ? field('Votre nom *', '<input name="name" autocomplete="name" required maxlength="80" placeholder="Prénom Nom">') : ''}
+          ${field('Adresse e-mail *', '<input name="email" id="auth-email" type="email" autocomplete="email" required inputmode="email">')}
+          ${field('Mot de passe *', `<input name="password" type="password" required minlength="6" autocomplete="${signup ? 'new-password' : 'current-password'}">`)}
+          <button class="btn primary block" type="submit">${signup ? 'Créer mon compte' : 'Se connecter'}</button>
+          ${signup ? '' : '<button class="btn ghost block" type="button" data-action="cloud-reset-password">Mot de passe oublié ?</button>'}
+        </form>
+        <div class="actions"><button class="btn ghost block" data-action="cloud-disable">Utiliser sans compte (données sur cet appareil)</button></div>
+      </div>`;
+    return {
+      title: 'Connexion', gated: true, html,
+      after() {
+        busyForm($('#auth-form'), async (d) => {
+          if (signup) await cloud.signUp(d.name, d.email, d.password);
+          else await cloud.signIn(d.email, d.password);
+        });
+      },
+    };
+  }
+
+  function viewWorkspaceSetup() {
+    const local = load();
+    const hasLocal = local.objectives.length || local.people.length;
+    const ready = cloud?.status === 'ready';
+    const html = `
+      ${ready ? '' : `<p class="muted">Connecté en tant que <b>${esc(cloud.user?.email)}</b>.</p>`}
+      <form id="join-form" class="card" novalidate>
+        <h3>Rejoindre une équipe</h3>
+        <p class="muted">Saisissez le code d'invitation transmis par l'administrateur de votre équipe.</p>
+        ${field("Code d'invitation *", '<input name="code" required maxlength="12" autocapitalize="characters" autocomplete="off" placeholder="Ex. : K7M2QX9A" class="code-input">')}
+        <button class="btn primary block" type="submit">Rejoindre</button>
+      </form>
+      <form id="create-form" class="card" novalidate style="margin-top:16px">
+        <h3>Créer un espace de travail</h3>
+        <p class="muted">Vous en serez l'administrateur : vous créerez les objectifs et les tâches, et inviterez les membres de votre équipe.</p>
+        ${field("Nom de l'espace *", '<input name="name" required maxlength="80" placeholder="Ex. : Société ABC – Direction commerciale">')}
+        ${hasLocal ? `<label class="check-line"><input type="checkbox" name="copy" checked> Copier les données déjà présentes sur ce téléphone (${plural(local.objectives.length, 'objectif', 'objectifs')}, ${plural(local.tasks.length, 'tâche', 'tâches')})</label>` : ''}
+        <button class="btn block" type="submit">Créer l'espace</button>
+      </form>
+      ${ready ? '' : `<div class="actions">
+        <button class="btn ghost" data-action="cloud-signout">Se déconnecter</button>
+        <button class="btn ghost" data-action="cloud-disable">Utiliser sans compte</button>
+      </div>`}`;
+    return {
+      title: 'Espace de travail', gated: !ready, back: ready, html,
+      after() {
+        busyForm($('#join-form'), async (d) => {
+          const name = await cloud.joinWorkspace(d.code);
+          location.hash = '#/';
+          toast(`Bienvenue dans « ${name} » !`);
+        });
+        busyForm($('#create-form'), async (d) => {
+          await cloud.createWorkspace(d.name.trim(), d.copy ? load() : null);
+          location.hash = '#/';
+          toast('Espace créé. Invitez votre équipe depuis les réglages.');
+        });
+      },
+    };
+  }
+
+  /** Branche un formulaire de page sur une action asynchrone, avec gestion de l'attente et des erreurs. */
+  function busyForm(form, run) {
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const missing = [...form.querySelectorAll('[required]')].find((el) => !el.value.trim());
+      if (missing) { missing.focus(); toast('Merci de remplir les champs obligatoires.'); return; }
+      const btn = form.querySelector('[type="submit"]');
+      const data = Object.fromEntries(new FormData(form));
+      document.activeElement?.blur();
+      btn.disabled = true;
+      try {
+        await run(data);
+      } catch (err) {
+        toast(cloudModule ? cloudModule.errorMessage(err) : err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   const notFound = () => ({ title: 'Introuvable', html: '<div class="empty"><h2>Élément introuvable</h2><p>Il a peut-être été supprimé.</p><a class="btn" href="#/">Retour au tableau de bord</a></div>', back: true });
 
   // ------------------------------------------------------------------
@@ -620,6 +815,7 @@
     personne: [viewPerson, 'equipe'],
     groupe: [viewTeamDetail, 'equipe'],
     reglages: [viewSettings, ''],
+    espace: [viewWorkspaceSetup, ''],
   };
 
   let lastRoute = '';
@@ -627,7 +823,10 @@
   function render() {
     const [name = '', id] = location.hash.replace(/^#\/?/, '').split('/');
     const [view, tab] = routes[name] || routes[''];
-    const v = view(id ? decodeURIComponent(id) : undefined);
+    const gate = mode === 'cloud' && cloud?.status !== 'ready';
+    const v = gate ? viewCloudGate() : view(id ? decodeURIComponent(id) : undefined);
+    document.body.classList.toggle('gated', !!v.gated);
+    if (!canManage() && ADMIN_ACTIONS.has(v.fab)) v.fab = null;
     $('#title').textContent = v.title;
     document.title = `${v.title} · Suivi d'Objectifs`;
     $('#back').hidden = !v.back;
@@ -639,6 +838,9 @@
     Object.assign(fab.dataset, v.fabData || {});
     fab.setAttribute('aria-label', v.fab === 'update-progress' ? "Mettre à jour l'avancement" : 'Ajouter');
     document.querySelectorAll('.tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
+    if (!canManage()) {
+      document.querySelectorAll('#view [data-action]').forEach((el) => { if (ADMIN_ACTIONS.has(el.dataset.action)) el.remove(); });
+    }
     if (v.after) v.after();
     if (location.hash !== lastRoute) { window.scrollTo(0, 0); lastRoute = location.hash; }
   }
@@ -803,7 +1005,11 @@
       body: `
         ${field('Nom *', `<input name="name" required maxlength="80" value="${esc(p.name)}" placeholder="Prénom Nom">`)}
         ${field('Rôle / fonction', `<input name="role" maxlength="80" value="${esc(p.role)}" placeholder="Ex. : Commercial">`)}
-        ${state.teams.length ? field('Équipes', `<div class="checks">${state.teams.map((t) => `<label><input type="checkbox" name="teams" value="${t.id}" ${p.id && t.memberIds.includes(p.id) ? 'checked' : ''}>${esc(t.name)}</label>`).join('')}</div>`) : ''}`,
+        ${state.teams.length ? field('Équipes', `<div class="checks">${state.teams.map((t) => `<label><input type="checkbox" name="teams" value="${t.id}" ${p.id && t.memberIds.includes(p.id) ? 'checked' : ''}>${esc(t.name)}</label>`).join('')}</div>`) : ''}
+        ${mode === 'cloud' && cloud?.members.length ? field('Compte lié (pour « Mes tâches »)', `<select name="uid">
+          <option value="">— Aucun —</option>
+          ${cloud.members.map((m) => `<option value="${esc(m.uid)}" ${m.uid === p.uid ? 'selected' : ''}>${esc(m.displayName || m.email)} (${esc(m.email)})</option>`).join('')}
+        </select>`) : ''}`,
       onSubmit(d, form) {
         const teamIds = [...form.querySelectorAll('input[name="teams"]:checked')].map((el) => el.value);
         if (isNew) {
@@ -812,6 +1018,11 @@
         }
         p.name = d.name.trim();
         p.role = (d.role || '').trim();
+        if ('uid' in d) {
+          // Un compte ne peut être lié qu'à une seule fiche.
+          if (d.uid) for (const other of state.people) if (other !== p && other.uid === d.uid) other.uid = null;
+          p.uid = d.uid || null;
+        }
         for (const t of state.teams) {
           const has = t.memberIds.includes(p.id);
           if (teamIds.includes(t.id) && !has) t.memberIds.push(p.id);
@@ -986,6 +1197,56 @@
       commit('Équipe supprimée.');
     },
     'obj-filter': ({ value }) => { ui.objFilter = value; render(); },
+    'my-tasks': () => { ui.taskFilter.assignee = 'me'; ui.taskFilter.status = 'open'; location.hash = '#/taches'; },
+    'cloud-enable': () => {
+      if (!CLOUD_CONFIG) return;
+      writeMode('cloud');
+      mode = 'cloud';
+      state = emptyState();
+      location.hash = '#/';
+      startCloudMode();
+      render();
+    },
+    'cloud-disable': () => {
+      writeMode('local');
+      location.hash = '#/';
+      location.reload();
+    },
+    'cloud-auth-mode': ({ value }) => { ui.authMode = value; render(); },
+    'cloud-signout': async () => {
+      if (!confirm('Se déconnecter de ce téléphone ?')) return;
+      await cloud.signOut();
+      location.hash = '#/';
+    },
+    'cloud-reset-password': async () => {
+      const email = $('#auth-email')?.value.trim();
+      if (!email) { toast('Saisissez d\'abord votre adresse e-mail.'); $('#auth-email')?.focus(); return; }
+      try {
+        await cloud.resetPassword(email);
+        toast('Un e-mail de réinitialisation vous a été envoyé.');
+      } catch (e) { toast(cloudModule.errorMessage(e)); }
+    },
+    'cloud-share-invite': async () => {
+      const ws = cloud.workspace;
+      const text = `Rejoignez « ${ws.name} » sur l'application Suivi d'Objectifs : ${location.origin}${location.pathname}\nCréez votre compte puis saisissez le code d'invitation : ${ws.inviteCode}`;
+      try {
+        if (navigator.share) await navigator.share({ title: "Invitation – Suivi d'Objectifs", text });
+        else { await navigator.clipboard.writeText(text); toast('Invitation copiée dans le presse-papiers.'); }
+      } catch (e) { /* partage annulé */ }
+    },
+    'cloud-new-code': () => runCloud(() => cloud.regenerateInvite(), "Nouveau code créé. L'ancien n'est plus valable.",
+      "Créer un nouveau code ? L'ancien code ne permettra plus de rejoindre l'espace."),
+    'cloud-rename': () => {
+      const name = prompt("Nouveau nom de l'espace :", cloud.workspace.name);
+      if (name && name.trim()) runCloud(() => cloud.renameWorkspace(name.trim()), 'Espace renommé.');
+    },
+    'cloud-remove-member': ({ id }) => {
+      const m = cloud.members.find((x) => x.uid === id);
+      runCloud(() => cloud.removeMember(id), 'Membre retiré.', `Retirer ${m?.displayName || m?.email} de l'espace ?`);
+    },
+    'cloud-switch': ({ id }) => { location.hash = '#/'; runCloud(() => cloud.switchWorkspace(id)); },
+    'cloud-leave': () => runCloud(async () => { await cloud.leaveWorkspace(); location.hash = '#/'; }, "Vous avez quitté l'espace.",
+      `Quitter l'espace « ${cloud.workspace.name} » ? Vous ne verrez plus ses données.`),
     export: exportData,
     import: () => $('#import-file').click(),
     sample: () => {
@@ -1009,13 +1270,31 @@
     },
   };
 
+  async function runCloud(fn, success, question) {
+    if (question && !confirm(question)) return;
+    try {
+      await fn();
+      if (success) toast(success);
+    } catch (e) {
+      toast(cloudModule.errorMessage(e));
+    }
+  }
+
+  document.addEventListener('change', (e) => {
+    const sel = e.target.closest('[data-member-role]');
+    if (sel && cloud?.isAdmin) runCloud(() => cloud.setMemberRole(sel.dataset.memberRole, sel.value), 'Rôle modifié.');
+  });
+
   document.addEventListener('click', (e) => {
     const chip = e.target.closest('[data-href]');
     if (chip) { e.preventDefault(); location.hash = chip.dataset.href; return; }
     const el = e.target.closest('[data-action]');
     if (!el || !el.dataset.action) return;
     const fn = actions[el.dataset.action];
-    if (fn) { e.preventDefault(); fn({ ...el.dataset }); }
+    if (!fn) return;
+    e.preventDefault();
+    if (ADMIN_ACTIONS.has(el.dataset.action) && !canManage()) { toast('Action réservée aux administrateurs.'); return; }
+    fn({ ...el.dataset });
   });
 
   $('#back').addEventListener('click', () => {
@@ -1024,7 +1303,7 @@
   });
 
   window.addEventListener('hashchange', render);
-  window.addEventListener('storage', (e) => { if (e.key === STORAGE_KEY) { state = load(); render(); } });
+  window.addEventListener('storage', (e) => { if (mode === 'local' && e.key === STORAGE_KEY) { state = load(); render(); } });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; if (location.hash === '#/reglages') render(); });
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
@@ -1032,5 +1311,49 @@
   }
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 
+  // ------------------------------------------------------------------
+  // Mode partagé : chargement du module de synchronisation
+  // ------------------------------------------------------------------
+
+  /** Remplace une collection par la version reçue du serveur, en conservant les objets existants (formulaires ouverts). */
+  function setCollection(col, docs) {
+    const incoming = normalize({ [col]: docs })[col];
+    const existing = new Map(state[col].map((x) => [x.id, x]));
+    state[col] = incoming.map((d) => {
+      const ex = existing.get(d.id);
+      if (!ex) return d;
+      for (const k of Object.keys(ex)) delete ex[k];
+      return Object.assign(ex, d);
+    });
+  }
+
+  // Regroupe les réaffichages, et les diffère pendant la saisie dans un champ de la page.
+  let renderQueued = false;
+  function remoteChanged() {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => {
+      renderQueued = false;
+      const a = document.activeElement;
+      if (a && $('#view').contains(a) && a.matches('input, textarea, select')) {
+        a.addEventListener('blur', remoteChanged, { once: true });
+        return;
+      }
+      render();
+    });
+  }
+
+  async function startCloudMode() {
+    try {
+      cloudModule = await import('./cloud.js');
+      cloud = cloudModule.startCloud(CLOUD_CONFIG, { setData: setCollection, changed: remoteChanged, toast });
+    } catch (e) {
+      toast('Impossible de charger la synchronisation. Vérifiez votre connexion.');
+      console.error(e);
+    }
+    render();
+  }
+
+  if (mode === 'cloud') startCloudMode();
   render();
 })();

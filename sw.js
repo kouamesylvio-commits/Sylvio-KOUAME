@@ -1,10 +1,12 @@
 /* Service worker : met l'application en cache pour un fonctionnement hors ligne. */
-const CACHE = 'suivi-objectifs-v1';
+const CACHE = 'suivi-objectifs-v2';
 const ASSETS = [
   './',
   './index.html',
   './css/styles.css',
+  './js/config.js',
   './js/app.js',
+  './js/cloud.js',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',
