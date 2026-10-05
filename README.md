@@ -20,6 +20,7 @@ Deux façons de l'utiliser :
 - **Personnes et équipes** : une tâche assignée à une équipe compte pour chacun de ses membres.
 - Filtres et recherche sur les tâches.
 - **Travail en équipe** : comptes, espace de travail partagé, invitation par code, rôles *administrateur* et *membre*, section « Mes tâches », auteur de chaque mise à jour.
+- **Rappels d'échéance** : notifications sur le téléphone la veille ou quelques jours avant l'échéance, rappel quotidien des tâches en retard, et section « Échéances des 7 prochains jours » sur le tableau de bord.
 - **Export / import** des données (fichier `.json`) pour les sauvegarder ou les transférer sur un autre appareil.
 - Thème clair ou sombre selon le réglage du téléphone.
 
@@ -99,6 +100,22 @@ Ces droits sont appliqués **par le serveur** (fichier `firestore.rules`), et pa
 
 Hors connexion, l'application reste utilisable : les modifications sont envoyées automatiquement au retour du réseau. Un compte peut appartenir à plusieurs espaces de travail.
 
+## Rappels d'échéance
+
+Dans *Réglages* (⚙) → **Rappels d'échéance**, cochez **Recevoir une notification** et autorisez les notifications quand Android le demande. Vous pouvez ensuite régler :
+
+- **Prévenir** : la veille, 2 jours, 3 jours ou une semaine avant l'échéance (une seule notification par échéance, plus une le jour J) ;
+- **Rappeler chaque jour les tâches en retard**.
+
+Les rappels portent sur **vos tâches** si votre compte est lié à votre fiche, en mode équipe. Sinon ils portent sur **toutes les tâches**. Touchez une notification pour ouvrir directement la tâche. Au-delà de 3 rappels à la fois, ils sont regroupés en une seule notification.
+
+Quand sont-ils vérifiés ?
+
+- **À l'ouverture de l'application**, et à chaque retour vers elle.
+- **En arrière-plan**, si l'application est **installée** sur l'écran d'accueil. Chrome pour Android vérifie alors périodiquement, environ deux fois par jour. C'est Android qui décide du moment exact, selon l'usage de l'application et l'état de la batterie.
+
+Les réglages de rappel sont propres à chaque téléphone. Il n'y a pas de notification envoyée par un serveur : cela demanderait l'offre payante de Firebase (Cloud Functions).
+
 ## Prise en main
 
 1. Onglet **Équipe** : ajoutez les personnes, puis regroupez-les en équipes.
@@ -122,6 +139,7 @@ L'application est en HTML, CSS et JavaScript, sans étape de compilation. Le SDK
 ```bash
 npm install
 npm start                 # http://localhost:8080
+npm test                  # tests du calcul des rappels
 npm run test:rules        # tests des règles de sécurité (émulateur Firestore, nécessite Java)
 npm run emulators         # émulateurs Auth + Firestore pour tester sans vrai projet
 npm run build:firebase    # régénère js/vendor/firebase.js après une mise à jour de Firebase
@@ -137,16 +155,17 @@ Pour tester la synchronisation sur les émulateurs, mettez dans `js/config.js` :
 | `js/app.js` | Logique, vues, formulaires, stockage local |
 | `js/config.js` | Configuration Firebase (`null` = sans compte) |
 | `js/cloud.js` | Synchronisation : comptes, espaces de travail, temps réel |
+| `js/reminders.js` | Calcul des rappels d'échéance (partagé avec le service worker) |
 | `js/vendor/firebase.js` | SDK Firebase assemblé (`npm run build:firebase`) |
 | `firestore.rules` | Règles de sécurité de la base de données |
 | `tests/rules.test.mjs` | Tests des règles de sécurité |
+| `tests/reminders.test.mjs` | Tests du calcul des rappels |
 | `manifest.webmanifest` | Métadonnées d'installation (nom, icônes, couleurs) |
-| `sw.js` | Service worker : fonctionnement hors ligne |
+| `sw.js` | Service worker : fonctionnement hors ligne, notifications de rappel |
 | `icons/` | Icônes de l'application |
 
 Après une modification de fichiers, incrémentez `CACHE` dans `sw.js` pour que les téléphones récupèrent la nouvelle version.
 
 ## Évolutions possibles
 
-- Notifications de rappel avant les échéances.
 - Publication sur le Play Store sous forme d'APK (via Capacitor ou une *Trusted Web Activity*).

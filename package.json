@@ -7,7 +7,8 @@
     "start": "http-server -p 8080 -c-1 .",
     "build:firebase": "esbuild js/firebase-entry.js --bundle --format=esm --minify --target=es2020 --outfile=js/vendor/firebase.js",
     "emulators": "firebase emulators:start --only auth,firestore --project demo-suivi",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-suivi \"node --test tests/rules.test.mjs\""
+    "test:rules": "firebase emulators:exec --only firestore --project demo-suivi \"node --test tests/rules.test.mjs\"",
+    "test": "node --test tests/reminders.test.mjs"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.2",

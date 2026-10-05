@@ -182,6 +182,91 @@
   }
 
   // ------------------------------------------------------------------
+  // Rappels d'échéance (notifications, voir js/reminders.js et sw.js)
+  // ------------------------------------------------------------------
+  const REMINDER_KEY = 'suivi-objectifs:rappels';
+  const REMINDER_DEFAULTS = { enabled: false, leadDays: 2, late: true };
+  const notifSupported = 'Notification' in window && 'serviceWorker' in navigator && location.protocol.startsWith('http');
+  let reminders = (() => {
+    try { return { ...REMINDER_DEFAULTS, ...JSON.parse(localStorage.getItem(REMINDER_KEY) || '{}') }; } catch (e) { return { ...REMINDER_DEFAULTS }; }
+  })();
+  const saveReminderPrefs = () => { try { localStorage.setItem(REMINDER_KEY, JSON.stringify(reminders)); } catch (e) { /* ignoré */ } };
+
+  /** Tâches surveillées sur cet appareil : les siennes si le compte est lié à une fiche, sinon toutes. */
+  function reminderTasks() {
+    let ts = state.tasks.filter((t) => isActiveTask(t) && t.status !== 'done' && t.dueDate);
+    if (mode === 'cloud') {
+      const me = myPerson();
+      if (me) ts = ts.filter((t) => tasksForPerson(me.id).includes(t));
+      else if (!canManage()) ts = [];
+    }
+    return ts;
+  }
+  const reminderScope = () => (mode === 'cloud' && myPerson() ? 'mes tâches' : 'toutes les tâches');
+
+  let digestTimer = null;
+  let lastDigest = '';
+  /** Transmet au service worker la liste des tâches à surveiller, puis lui demande de vérifier les rappels. */
+  function syncReminders() {
+    if (!notifSupported || !self.Rappels || (mode === 'cloud' && cloud?.status !== 'ready')) return;
+    clearTimeout(digestTimer);
+    digestTimer = setTimeout(async () => {
+      const digest = {
+        ...reminders,
+        enabled: reminders.enabled && Notification.permission === 'granted',
+        tasks: reminderTasks().map((t) => ({ id: t.id, title: t.title, dueDate: t.dueDate, objective: objective(t.objectiveId)?.title || '' })),
+      };
+      const json = JSON.stringify(digest);
+      try {
+        if (json !== lastDigest) { await Rappels.saveDigest(digest); lastDigest = json; }
+        if (digest.enabled) (await navigator.serviceWorker.ready).active?.postMessage({ type: 'check-reminders' });
+      } catch (e) { /* cache ou service worker indisponible */ }
+    }, 800);
+  }
+
+  let backgroundReminders = false;
+  /** Active la vérification en arrière-plan (Chrome Android, application installée). */
+  async function updatePeriodicSync() {
+    backgroundReminders = false;
+    if (!notifSupported) return;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if (!reg.periodicSync) return;
+      if (!reminders.enabled) { await reg.periodicSync.unregister(Rappels.PERIODIC_TAG); return; }
+      const perm = await navigator.permissions.query({ name: 'periodic-background-sync' });
+      if (perm.state === 'granted') {
+        await reg.periodicSync.register(Rappels.PERIODIC_TAG, { minInterval: 12 * 3600 * 1000 });
+        backgroundReminders = true;
+      }
+    } catch (e) { /* non pris en charge */ }
+  }
+
+  function reminderSettings() {
+    if (!notifSupported) {
+      return `<section class="card"><h3>Rappels d'échéance</h3>
+        <p class="muted">Les notifications ne sont pas disponibles dans ce navigateur. Ouvrez l'application dans Chrome sur Android.</p></section>`;
+    }
+    if (Notification.permission === 'denied') {
+      return `<section class="card"><h3>Rappels d'échéance</h3>
+        <p class="muted">Les notifications sont bloquées pour cette application. Pour les autoriser : <b>Paramètres Android → Applications → Objectifs</b> (ou Chrome) <b>→ Notifications</b>, puis revenez ici.</p></section>`;
+    }
+    const on = reminders.enabled && Notification.permission === 'granted';
+    const lead = [[1, 'La veille'], [2, '2 jours avant'], [3, '3 jours avant'], [7, 'Une semaine avant']];
+    return `<section class="card">
+      <h3>Rappels d'échéance</h3>
+      <label class="check-line" style="margin-top:10px"><input type="checkbox" data-reminder="enabled" ${on ? 'checked' : ''}>
+        Recevoir une notification avant l'échéance de ${reminderScope()}</label>
+      ${on ? `
+        ${field('Prévenir', `<select data-reminder="leadDays">${lead.map(([v, l]) => `<option value="${v}" ${v === reminders.leadDays ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
+        <label class="check-line"><input type="checkbox" data-reminder="late" ${reminders.late ? 'checked' : ''}> Rappeler chaque jour les tâches en retard</label>
+        <p class="muted">${backgroundReminders
+          ? '✅ Vérification en arrière-plan active : vous êtes prévenu même sans ouvrir l\'application (environ deux fois par jour, selon Android).'
+          : 'Les rappels s\'affichent quand l\'application est ouverte. Installez-la sur l\'écran d\'accueil pour les recevoir aussi en arrière-plan.'}</p>
+        <div class="actions"><button class="btn" data-action="test-notification">Tester une notification</button></div>` : ''}
+    </section>`;
+  }
+
+  // ------------------------------------------------------------------
   // Fragments d'interface
   // ------------------------------------------------------------------
   const bar = (p, cls = '') => `<div class="bar ${cls}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p}"><span style="width:${p}%"></span></div>`;
@@ -329,6 +414,9 @@
     const alerts = sortTasks([...new Set([...blocked, ...late])]);
     const me = myPerson();
     const myOpen = me ? sortTasks(tasksForPerson(me.id).filter((t) => isActiveTask(t) && t.status !== 'done')) : [];
+    const horizon = isoDay(new Date(Date.now() + 7 * 864e5));
+    const upcoming = sortTasks((me ? tasksForPerson(me.id) : state.tasks)
+      .filter((t) => isActiveTask(t) && t.status !== 'done' && t.dueDate && t.dueDate >= today() && t.dueDate <= horizon));
 
     const perf = [
       ...state.teams.map((e) => ({ entity: e, kind: 'team', tasks: tasksForTeam(e.id).filter(isActiveTask) })),
@@ -351,6 +439,11 @@
       ${me ? `<section>
         <h2 class="section-title">Mes tâches (${myOpen.length}) <a class="muted" href="#/taches" data-action="my-tasks">Tout voir</a></h2>
         ${myOpen.length ? taskList(myOpen.slice(0, 5)) : '<div class="empty-inline">Aucune tâche en cours pour vous. 🎉</div>'}
+      </section>` : ''}
+
+      ${upcoming.length ? `<section>
+        <h2 class="section-title">Échéances des 7 prochains jours (${upcoming.length})</h2>
+        ${taskList(upcoming.slice(0, 5))}
       </section>` : ''}
 
       <section>
@@ -624,6 +717,7 @@
              <div class="actions"><button class="btn primary" data-action="cloud-enable">Activer la synchronisation</button></div>`
           : '<p class="muted">La synchronisation entre téléphones n\'est pas encore configurée pour cette installation (voir le fichier README, section « Synchronisation »).</p>'}
       </section>`}
+      ${reminderSettings()}
       <section class="card">
         <h3>Sauvegarde</h3>
         <p class="muted">${mode === 'cloud'
@@ -842,6 +936,7 @@
       document.querySelectorAll('#view [data-action]').forEach((el) => { if (ADMIN_ACTIONS.has(el.dataset.action)) el.remove(); });
     }
     if (v.after) v.after();
+    syncReminders();
     if (location.hash !== lastRoute) { window.scrollTo(0, 0); lastRoute = location.hash; }
   }
 
@@ -1197,6 +1292,15 @@
       commit('Équipe supprimée.');
     },
     'obj-filter': ({ value }) => { ui.objFilter = value; render(); },
+    'test-notification': async () => {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        await reg.showNotification('⏰ Rappels activés', {
+          body: 'Vous serez prévenu ici avant les échéances de vos tâches.',
+          icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'rappel-test', data: { hash: '#/' },
+        });
+      } catch (e) { toast("Impossible d'afficher la notification."); }
+    },
     'my-tasks': () => { ui.taskFilter.assignee = 'me'; ui.taskFilter.status = 'open'; location.hash = '#/taches'; },
     'cloud-enable': () => {
       if (!CLOUD_CONFIG) return;
@@ -1280,6 +1384,27 @@
     }
   }
 
+  document.addEventListener('change', async (e) => {
+    const pref = e.target.closest('[data-reminder]');
+    if (!pref) return;
+    const key = pref.dataset.reminder;
+    if (key === 'enabled' && pref.checked && Notification.permission !== 'granted') {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') {
+        pref.checked = false;
+        toast('Notifications refusées : les rappels ne peuvent pas être affichés.');
+        render();
+        return;
+      }
+    }
+    reminders[key] = pref.type === 'checkbox' ? pref.checked : Number(pref.value);
+    saveReminderPrefs();
+    await updatePeriodicSync();
+    lastDigest = '';
+    render();
+    if (key === 'enabled') toast(pref.checked ? 'Rappels activés.' : 'Rappels désactivés.');
+  });
+
   document.addEventListener('change', (e) => {
     const sel = e.target.closest('[data-member-role]');
     if (sel && cloud?.isAdmin) runCloud(() => cloud.setMemberRole(sel.dataset.memberRole, sel.value), 'Rôle modifié.');
@@ -1352,6 +1477,12 @@
       console.error(e);
     }
     render();
+  }
+
+  if (notifSupported) {
+    navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.type === 'open') location.hash = e.data.hash; });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { lastDigest = ''; syncReminders(); } });
+    if (reminders.enabled) updatePeriodicSync().then(() => { if (location.hash === '#/reglages') render(); });
   }
 
   if (mode === 'cloud') startCloudMode();
