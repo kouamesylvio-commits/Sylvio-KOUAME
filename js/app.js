@@ -5,7 +5,7 @@
   // ------------------------------------------------------------------
   // Constantes & utilitaires
   // ------------------------------------------------------------------
-  const APP_VERSION = '1.4 (6 octobre 2026)';
+  const APP_VERSION = '1.5 (6 octobre 2026)';
   const STORAGE_KEY = 'suivi-objectifs:v1';
   const STATUS = { todo: 'À faire', doing: 'En cours', blocked: 'Bloquée', done: 'Terminée' };
   const PRIORITY = { low: 'Basse', normal: 'Normale', high: 'Haute' };
@@ -64,7 +64,8 @@
   const CLOUD_CONFIG = window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.apiKey ? window.FIREBASE_CONFIG : null;
   const readMode = () => { try { return localStorage.getItem(MODE_KEY); } catch (e) { return null; } };
   const writeMode = (m) => { try { localStorage.setItem(MODE_KEY, m); } catch (e) { /* ignoré */ } };
-  let mode = CLOUD_CONFIG && readMode() === 'cloud' ? 'cloud' : 'local';
+  // Firebase configuré : connexion par défaut, sauf si l'utilisateur a choisi « Utiliser sans compte ».
+  let mode = CLOUD_CONFIG && readMode() !== 'local' ? 'cloud' : 'local';
   let cloud = null;
   let cloudModule = null;
   // Mode démonstration : données fictives gardées en mémoire et jamais enregistrées ;
@@ -955,6 +956,14 @@
     $('#title').textContent = v.title;
     document.title = `${v.title} · Suivi d'Objectifs`;
     $('#back').hidden = !v.back;
+    const account = $('#account');
+    const signedIn = mode === 'cloud' && cloud?.status === 'ready' && !v.gated;
+    account.hidden = !signedIn;
+    if (signedIn) {
+      const name = cloud.user.displayName || cloud.user.email;
+      account.textContent = initials(name);
+      account.setAttribute('aria-label', `Mon compte : ${name}`);
+    }
     $('#view').innerHTML = v.html;
     const fab = $('#fab');
     fab.hidden = !v.fab;
@@ -1328,6 +1337,16 @@
           commit('Annulé : la tâche reprend son état précédent.');
         },
       });
+    },
+    refresh: async () => {
+      const btn = $('#refresh');
+      btn.classList.add('spinning');
+      try {
+        // Récupère la dernière version publiée de l'application, puis recharge (et resynchronise en mode équipe).
+        const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+        if (reg) await Promise.race([reg.update(), new Promise((r) => setTimeout(r, 4000))]);
+      } catch (e) { /* hors connexion : on recharge quand même depuis le cache */ }
+      location.reload();
     },
     'test-vibration': () => {
       if (!navigator.vibrate) { toast('Ce navigateur ne permet pas la vibration (utilisez Chrome sur Android).'); return; }
