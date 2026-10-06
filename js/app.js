@@ -5,6 +5,7 @@
   // ------------------------------------------------------------------
   // Constantes & utilitaires
   // ------------------------------------------------------------------
+  const APP_VERSION = '1.3 (6 octobre 2026)';
   const STORAGE_KEY = 'suivi-objectifs:v1';
   const STATUS = { todo: 'À faire', doing: 'En cours', blocked: 'Bloquée', done: 'Terminée' };
   const PRIORITY = { low: 'Basse', normal: 'Normale', high: 'Haute' };
@@ -759,6 +760,7 @@
         <h3>Préférences</h3>
         <label class="check-line" style="margin-top:10px"><input type="checkbox" data-pref="haptics" ${haptics ? 'checked' : ''}>
           Vibration légère lors des sélections</label>
+        <p class="meta">Version ${APP_VERSION}</p>
       </section>
       <section class="card">
         <h3>Comment ça marche ?</h3>
@@ -1486,6 +1488,17 @@
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+  // Nouvelle version installée par le service worker : on recharge pour l'utiliser,
+  // sauf si l'utilisateur est en train de saisir (on attend alors qu'il quitte l'application).
+  if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+    let reloaded = false;
+    const reloadNow = () => { if (!reloaded) { reloaded = true; location.reload(); } };
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      const busy = $('#modal').open || document.activeElement?.matches('input, textarea, select');
+      if (!busy) reloadNow();
+      else document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') reloadNow(); }, { once: true });
+    });
   }
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 
