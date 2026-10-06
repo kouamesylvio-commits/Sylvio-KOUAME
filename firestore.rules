@@ -1,0 +1,68 @@
+rules_version = '2';
+
+// Règles de sécurité de Suivi d'Objectifs.
+// - Seuls les membres d'un espace de travail peuvent en lire les données.
+// - Les administrateurs gèrent objectifs, tâches, personnes et équipes.
+// - Les membres peuvent uniquement mettre à jour l'avancement des tâches.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function memberDoc(wid) {
+      return /databases/$(database)/documents/workspaces/$(wid)/members/$(request.auth.uid);
+    }
+    function isMember(wid) {
+      return signedIn() && exists(memberDoc(wid));
+    }
+    function isAdmin(wid) {
+      return isMember(wid) && get(memberDoc(wid)).data.role == 'admin';
+    }
+    function dataCollection(col) {
+      return col in ['people', 'teams', 'objectives', 'tasks'];
+    }
+
+    // Profil de l'utilisateur : liste de ses espaces de travail.
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Codes d'invitation : lisibles un par un par tout utilisateur connecté qui connaît le code.
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn() && isAdmin(request.resource.data.workspaceId);
+      allow delete: if signedIn() && isAdmin(resource.data.workspaceId);
+    }
+
+    match /workspaces/{wid} {
+      allow read: if isMember(wid);
+      allow create: if signedIn() && request.resource.data.createdBy == request.auth.uid;
+      allow update, delete: if isAdmin(wid);
+
+      match /members/{uid} {
+        allow read: if isMember(wid);
+        // Le créateur de l'espace devient administrateur ; les autres rejoignent avec un code valide.
+        allow create: if signedIn() && uid == request.auth.uid && (
+          (request.resource.data.role == 'admin'
+            && get(/databases/$(database)/documents/workspaces/$(wid)).data.createdBy == request.auth.uid)
+          || (request.resource.data.role == 'membre'
+            && get(/databases/$(database)/documents/invites/$(request.resource.data.code)).data.workspaceId == wid)
+        );
+        allow update: if isAdmin(wid) && request.resource.data.uid == resource.data.uid;
+        allow delete: if isAdmin(wid) || (signedIn() && uid == request.auth.uid);
+      }
+
+      match /{col}/{id} {
+        allow read: if dataCollection(col) && isMember(wid);
+        allow create, delete: if dataCollection(col) && isAdmin(wid);
+        allow update: if dataCollection(col) && (
+          isAdmin(wid)
+          || (col == 'tasks' && isMember(wid)
+              && request.resource.data.diff(resource.data).affectedKeys()
+                   .hasOnly(['progress', 'status', 'history', 'updatedAt']))
+        );
+      }
+    }
+  }
+}

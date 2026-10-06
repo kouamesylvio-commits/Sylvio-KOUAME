@@ -1,0 +1,20 @@
+{
+  "name": "suivi-objectifs",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Suivi des tâches et objectifs d'une personne ou d'une équipe (PWA Android, synchronisation Firebase).",
+  "scripts": {
+    "start": "http-server -p 8080 -c-1 .",
+    "build:firebase": "esbuild js/firebase-entry.js --bundle --format=esm --minify --target=es2020 --outfile=js/vendor/firebase.js",
+    "emulators": "firebase emulators:start --only auth,firestore --project demo-suivi",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-suivi \"node --test tests/rules.test.mjs\"",
+    "test": "node --test tests/reminders.test.mjs"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
+    "esbuild": "^0.25.0",
+    "firebase": "^12.3.0",
+    "firebase-tools": "^14.0.0",
+    "http-server": "^14.1.1"
+  }
+}
