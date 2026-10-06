@@ -1,7 +1,7 @@
 /* Service worker : fonctionnement hors ligne et rappels d'échéance. */
 importScripts('js/reminders.js');
 
-const CACHE = 'suivi-objectifs-v3';
+const CACHE = 'suivi-objectifs-v4';
 const ASSETS = [
   './',
   './index.html',
