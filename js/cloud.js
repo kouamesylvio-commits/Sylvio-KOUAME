@@ -11,7 +11,7 @@ import {
   initializeApp, getAuth, connectAuthEmulator, onAuthStateChanged, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, updateProfile, signOut,
   initializeFirestore, connectFirestoreEmulator, persistentLocalCache, persistentMultipleTabManager,
-  doc, collection, getDoc, setDoc, updateDoc, deleteDoc, writeBatch, onSnapshot, arrayUnion, deleteField, serverTimestamp,
+  doc, collection, getDoc, getDocFromServer, setDoc, updateDoc, deleteDoc, writeBatch, onSnapshot, arrayUnion, deleteField, serverTimestamp,
 } from './vendor/firebase.js';
 
 const COLLECTIONS = ['people', 'teams', 'objectives', 'tasks'];
@@ -87,8 +87,34 @@ export function startCloud(config, hooks) {
     for (const c of COLLECTIONS) hooks.setData(c, []);
   }
 
-  function lostAccess(wid) {
+  let verifying = false;
+  let retries = 0;
+
+  /**
+   * Un refus d'accès peut être passager (serveur qui démarre, jeton en cours de renouvellement…).
+   * On vérifie auprès du serveur que l'utilisateur n'est plus membre avant de lui retirer l'espace ;
+   * sinon on se reconnecte simplement, avec un délai croissant.
+   */
+  async function verifyAccess(wid, reason) {
+    if (openedId !== wid || verifying) return;
+    verifying = true;
+    try {
+      const still = (await getDocFromServer(memberRef(wid))).exists();
+      if (!still) { lostAccess(wid, reason); return; }
+      console.warn('[synchro] refus passager, reconnexion à l\'espace', wid, reason);
+      if (++retries > 5) { hooks.toast('Synchronisation interrompue. Fermez puis rouvrez l\'application.'); return; }
+      setTimeout(() => { if (openedId === wid) { closeWorkspace(); openWorkspace(wid); } }, 800 * retries);
+    } catch (e) {
+      if (e.code === 'permission-denied') lostAccess(wid, reason); // la fiche membre n'est plus lisible : accès réellement retiré
+      else hooks.toast(errorMessage(e)); // hors connexion : on garde l'espace et on réessaiera
+    } finally {
+      verifying = false;
+    }
+  }
+
+  function lostAccess(wid, reason) {
     if (openedId !== wid) return;
+    console.warn('[synchro] accès perdu à l\'espace', wid, reason);
     closeWorkspace();
     cloud.status = 'noWorkspace';
     updateDoc(userRef(), { [`workspaces.${wid}`]: deleteField(), current: deleteField() }).catch(() => {});
@@ -105,24 +131,24 @@ export function startCloud(config, hooks) {
     const pending = new Set(['workspace', 'members', ...COLLECTIONS]);
     const loaded = (key) => {
       pending.delete(key);
-      if (!pending.size && cloud.role && openedId === wid) { cloud.status = 'ready'; }
+      if (!pending.size && cloud.role && openedId === wid) { cloud.status = 'ready'; retries = 0; }
       changed();
     };
-    const fail = (e) => (e.code === 'permission-denied' ? lostAccess(wid) : hooks.toast(errorMessage(e)));
+    const fail = (src) => (e) => (e.code === 'permission-denied' ? verifyAccess(wid, `${src}: ${e.code}`) : hooks.toast(errorMessage(e)));
 
     wsUnsubs.push(onSnapshot(doc(db, 'workspaces', wid), (snap) => {
-      if (!snap.exists()) return snap.metadata.fromCache ? null : lostAccess(wid);
+      if (!snap.exists()) return snap.metadata.fromCache ? null : verifyAccess(wid, 'espace introuvable');
       cloud.workspace = { id: wid, ...snap.data() };
       loaded('workspace');
-    }, fail));
+    }, fail('espace')));
 
     wsUnsubs.push(onSnapshot(collection(db, 'workspaces', wid, 'members'), (snap) => {
       cloud.members = snap.docs.map((d) => d.data()).sort((a, b) => (a.displayName || '').localeCompare(b.displayName || '', 'fr'));
       const me = cloud.members.find((m) => m.uid === uid());
-      if (!me) return snap.metadata.fromCache ? null : lostAccess(wid);
+      if (!me) return snap.metadata.fromCache ? null : verifyAccess(wid, 'membre absent de la liste');
       cloud.role = me.role;
       loaded('members');
-    }, fail));
+    }, fail('membres')));
 
     for (const c of COLLECTIONS) {
       wsUnsubs.push(onSnapshot(collection(db, 'workspaces', wid, c), (snap) => {
@@ -130,7 +156,7 @@ export function startCloud(config, hooks) {
         synced[c] = new Map(docs.map((d) => [d.id, clone(d)]));
         hooks.setData(c, docs);
         loaded(c);
-      }, fail));
+      }, fail(c)));
     }
   }
 

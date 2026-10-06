@@ -23,6 +23,7 @@ Deux façons de l'utiliser :
 - **Rappels d'échéance** : notifications sur le téléphone la veille ou quelques jours avant l'échéance, rappel quotidien des tâches en retard, et section « Échéances des 7 prochains jours » sur le tableau de bord.
 - **Export / import** des données (fichier `.json`) pour les sauvegarder ou les transférer sur un autre appareil.
 - Thème clair ou sombre selon le réglage du téléphone.
+- Vibration légère à chaque sélection, et double vibration quand une tâche est terminée. Elle peut être désactivée dans *Réglages → Préférences*.
 
 ## Installer l'application sur Android
 
@@ -124,7 +125,7 @@ Les réglages de rappel sont propres à chaque téléphone. Il n'y a pas de noti
 4. Au fil du temps, ouvrez une tâche et touchez **Mettre à jour l'avancement**.
 5. Suivez l'ensemble depuis le **Tableau** de bord.
 
-Pour découvrir l'application, utilisez **Voir un exemple** à l'écran d'accueil (ou *Réglages → Charger un exemple*).
+Pour découvrir l'application, utilisez **Voir une démonstration** à l'écran d'accueil (ou *Réglages → Voir la démonstration*). La démonstration affiche des données fictives **sans jamais modifier vos données** : un bandeau rappelle que vous êtes en démo, et le bouton **Quitter** (ou un simple rechargement) vous ramène à vos données intactes. Pendant la démo, l'effacement, l'import, l'export et les réglages du compte sont bloqués.
 
 ## Règles de calcul
 

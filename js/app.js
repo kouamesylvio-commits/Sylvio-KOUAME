@@ -66,8 +66,12 @@
   let mode = CLOUD_CONFIG && readMode() === 'cloud' ? 'cloud' : 'local';
   let cloud = null;
   let cloudModule = null;
+  // Mode démonstration : données fictives gardées en mémoire et jamais enregistrées ;
+  // les vraies données sont mises de côté et retrouvées intactes en quittant la démo.
+  let demo = null;
 
   function save() {
+    if (demo) return;
     if (mode === 'cloud') { if (cloud) cloud.push(state); return; }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -81,8 +85,10 @@
 
   // Actions réservées aux administrateurs en mode partagé (les membres mettent à jour l'avancement).
   const ADMIN_ACTIONS = new Set(['new-objective', 'edit-objective', 'archive-objective', 'delete-objective', 'new-task', 'edit-task',
-    'delete-task', 'new-person', 'edit-person', 'delete-person', 'new-team', 'edit-team', 'delete-team', 'sample', 'reset', 'import']);
-  const canManage = () => mode !== 'cloud' || !!cloud?.isAdmin;
+    'delete-task', 'new-person', 'edit-person', 'delete-person', 'new-team', 'edit-team', 'delete-team', 'reset', 'import']);
+  const canManage = () => !!demo || mode !== 'cloud' || !!cloud?.isAdmin;
+  // Actions qui touchent aux vraies données ou au compte : interdites pendant la démonstration.
+  const blockedInDemo = (action) => ['reset', 'import', 'export'].includes(action) || action.startsWith('cloud-');
   const myPerson = () => (mode === 'cloud' && cloud?.user ? state.people.find((p) => p.uid === cloud.user.uid) || null : null);
 
   // ------------------------------------------------------------------
@@ -208,6 +214,7 @@
   let lastDigest = '';
   /** Transmet au service worker la liste des tâches à surveiller, puis lui demande de vérifier les rappels. */
   function syncReminders() {
+    if (demo) return;
     if (!notifSupported || !self.Rappels || (mode === 'cloud' && cloud?.status !== 'ready')) return;
     clearTimeout(digestTimer);
     digestTimer = setTimeout(async () => {
@@ -265,6 +272,17 @@
         <div class="actions"><button class="btn" data-action="test-notification">Tester une notification</button></div>` : ''}
     </section>`;
   }
+
+  // ------------------------------------------------------------------
+  // Retour haptique (vibration légère, Android)
+  // ------------------------------------------------------------------
+  const HAPTIC_KEY = 'suivi-objectifs:vibrations';
+  let haptics = (() => { try { return localStorage.getItem(HAPTIC_KEY) !== '0'; } catch (e) { return true; } })();
+  function vibrate(pattern = 10) {
+    if (!haptics || !navigator.vibrate) return;
+    try { navigator.vibrate(pattern); } catch (e) { /* non pris en charge */ }
+  }
+  const VIBRATE_SUCCESS = [15, 60, 25];
 
   // ------------------------------------------------------------------
   // Fragments d'interface
@@ -397,7 +415,7 @@
       <p>Créez vos objectifs, découpez-les en tâches, assignez-les à des personnes ou à des équipes, puis suivez l'avancement au jour le jour.</p>
       <div class="actions">
         <button class="btn primary" data-action="new-objective">Créer un objectif</button>
-        <button class="btn" data-action="sample">Voir un exemple</button>
+        <button class="btn" data-action="demo-start">Voir une démonstration</button>
       </div>
     </div>`;
   }
@@ -730,10 +748,17 @@
       </section>
       <section class="card">
         <h3>Données</h3>
+        <p class="muted">La démonstration affiche des données fictives sans jamais modifier les vôtres.</p>
         <div class="actions">
-          <button class="btn" data-action="sample">Charger un exemple</button>
+          ${demo ? '<button class="btn primary" data-action="demo-exit">Quitter la démonstration</button>'
+            : '<button class="btn" data-action="demo-start">Voir la démonstration</button>'}
           <button class="btn danger" data-action="reset">Tout effacer</button>
         </div>
+      </section>
+      <section class="card">
+        <h3>Préférences</h3>
+        <label class="check-line" style="margin-top:10px"><input type="checkbox" data-pref="haptics" ${haptics ? 'checked' : ''}>
+          Vibration légère lors des sélections</label>
       </section>
       <section class="card">
         <h3>Comment ça marche ?</h3>
@@ -920,6 +945,7 @@
     const gate = mode === 'cloud' && cloud?.status !== 'ready';
     const v = gate ? viewCloudGate() : view(id ? decodeURIComponent(id) : undefined);
     document.body.classList.toggle('gated', !!v.gated);
+    $('#demo-banner').hidden = !demo || !!v.gated;
     if (!canManage() && ADMIN_ACTIONS.has(v.fab)) v.fab = null;
     $('#title').textContent = v.title;
     document.title = `${v.title} · Suivi d'Objectifs`;
@@ -1087,6 +1113,7 @@
       },
       onSubmit(d) {
         recordProgress(t, d.progress, d.status, d.note);
+        if (t.status === 'done') { vibrate(VIBRATE_SUCCESS); return 'Tâche terminée 🎉'; }
         return 'Avancement enregistré.';
       },
     });
@@ -1269,6 +1296,7 @@
       }
       else recordProgress(t, 100, 'done', '');
       commit(t.status === 'done' ? 'Tâche terminée 🎉' : 'Tâche rouverte.');
+      if (t.status === 'done') vibrate(VIBRATE_SUCCESS);
     },
     'new-person': () => personForm(),
     'edit-person': ({ id }) => personForm(person(id)),
@@ -1353,11 +1381,21 @@
       `Quitter l'espace « ${cloud.workspace.name} » ? Vous ne verrez plus ses données.`),
     export: exportData,
     import: () => $('#import-file').click(),
-    sample: () => {
-      if (state.objectives.length && !confirm("Remplacer les données actuelles par l'exemple ?")) return;
+    'demo-start': () => {
+      if (demo) return;
+      demo = { real: state };
       state = sampleData();
       location.hash = '#/';
-      commit("Données d'exemple chargées.");
+      render();
+      toast('Démonstration : données fictives, vos données ne sont pas modifiées.');
+    },
+    'demo-exit': () => {
+      if (!demo) return;
+      state = demo.real;
+      demo = null;
+      location.hash = '#/';
+      render();
+      toast('Démonstration terminée : vous retrouvez vos données.');
     },
     reset: () => {
       if (!confirm('Effacer définitivement toutes les données de cet appareil ?')) return;
@@ -1407,8 +1445,22 @@
 
   document.addEventListener('change', (e) => {
     const sel = e.target.closest('[data-member-role]');
-    if (sel && cloud?.isAdmin) runCloud(() => cloud.setMemberRole(sel.dataset.memberRole, sel.value), 'Rôle modifié.');
+    if (sel && cloud?.isAdmin && !demo) runCloud(() => cloud.setMemberRole(sel.dataset.memberRole, sel.value), 'Rôle modifié.');
   });
+
+  // Vibration à chaque sélection : boutons, liens, onglets, cases à cocher, listes et curseurs.
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('button:not(:disabled), a[href], [data-href], label')) vibrate(8);
+  }, true);
+  document.addEventListener('change', (e) => {
+    if (e.target.matches('select, input[type="range"]')) vibrate(8);
+    if (e.target.matches('[data-pref="haptics"]')) {
+      haptics = e.target.checked;
+      try { localStorage.setItem(HAPTIC_KEY, haptics ? '1' : '0'); } catch (err) { /* ignoré */ }
+      vibrate(20);
+      toast(haptics ? 'Vibrations activées.' : 'Vibrations désactivées.');
+    }
+  }, true);
 
   document.addEventListener('click', (e) => {
     const chip = e.target.closest('[data-href]');
@@ -1419,6 +1471,7 @@
     if (!fn) return;
     e.preventDefault();
     if (ADMIN_ACTIONS.has(el.dataset.action) && !canManage()) { toast('Action réservée aux administrateurs.'); return; }
+    if (demo && blockedInDemo(el.dataset.action)) { toast("Quittez d'abord la démonstration (bandeau en haut de l'écran)."); return; }
     fn({ ...el.dataset });
   });
 
@@ -1442,9 +1495,10 @@
 
   /** Remplace une collection par la version reçue du serveur, en conservant les objets existants (formulaires ouverts). */
   function setCollection(col, docs) {
+    const target = demo ? demo.real : state; // pendant la démo, les données reçues sont mises de côté
     const incoming = normalize({ [col]: docs })[col];
-    const existing = new Map(state[col].map((x) => [x.id, x]));
-    state[col] = incoming.map((d) => {
+    const existing = new Map(target[col].map((x) => [x.id, x]));
+    target[col] = incoming.map((d) => {
       const ex = existing.get(d.id);
       if (!ex) return d;
       for (const k of Object.keys(ex)) delete ex[k];
