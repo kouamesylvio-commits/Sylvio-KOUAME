@@ -5,7 +5,7 @@
   // ------------------------------------------------------------------
   // Constantes & utilitaires
   // ------------------------------------------------------------------
-  const APP_VERSION = '1.3 (6 octobre 2026)';
+  const APP_VERSION = '1.4 (6 octobre 2026)';
   const STORAGE_KEY = 'suivi-objectifs:v1';
   const STATUS = { todo: 'À faire', doing: 'En cours', blocked: 'Bloquée', done: 'Terminée' };
   const PRIORITY = { low: 'Basse', normal: 'Normale', high: 'Haute' };
@@ -283,7 +283,9 @@
     if (!haptics || !navigator.vibrate) return;
     try { navigator.vibrate(pattern); } catch (e) { /* non pris en charge */ }
   }
-  const VIBRATE_SUCCESS = [15, 60, 25];
+  // Durées en millisecondes : en dessous d'environ 30 ms, beaucoup de vibreurs Android ne se font pas sentir.
+  const VIBRATE_TAP = 35;
+  const VIBRATE_SUCCESS = [60, 80, 90];
 
   // ------------------------------------------------------------------
   // Fragments d'interface
@@ -380,7 +382,7 @@
     svg += `<path class="real" d="${d}"/>`;
     for (const p of pts) svg += `<circle class="dot" cx="${x(p.d)}" cy="${y(p.p)}" r="3.5"><title>${fmtDate(p.d)} : ${p.p}%</title></circle>`;
     svg += `<text x="${L}" y="${H - 8}">${fmtDate(min).slice(0, 5)}</text>`;
-    svg += `<text x="${W - R}" y="${H - 8}" text-anchor="end">${fmtDate(max).slice(0, 5)}</text>`;
+    if (max !== today()) svg += `<text x="${W - R}" y="${H - 8}" text-anchor="end">${fmtDate(max).slice(0, 5)}</text>`;
     svg += `<text x="${tx}" y="${H - 8}" text-anchor="middle">auj.</text>`;
     return svg + '</svg>';
   }
@@ -760,6 +762,7 @@
         <h3>Préférences</h3>
         <label class="check-line" style="margin-top:10px"><input type="checkbox" data-pref="haptics" ${haptics ? 'checked' : ''}>
           Vibration légère lors des sélections</label>
+        <div class="actions"><button class="btn sm" data-action="test-vibration">Tester la vibration</button></div>
         <p class="meta">Version ${APP_VERSION}</p>
       </section>
       <section class="card">
@@ -975,12 +978,22 @@
   }
 
   let toastTimer;
-  function toast(msg) {
+  /** Message temporaire, avec éventuellement un bouton d'action (ex. « Annuler »). */
+  function toast(msg, action) {
     const el = $('#toast');
     el.textContent = msg;
+    if (action) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'toast-action';
+      btn.textContent = action.label;
+      btn.addEventListener('click', () => { clearTimeout(toastTimer); el.classList.remove('show'); action.run(); });
+      el.append(btn);
+    }
+    el.classList.toggle('has-action', !!action);
     el.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+    toastTimer = setTimeout(() => el.classList.remove('show'), action ? 5000 : 2600);
   }
 
   // ------------------------------------------------------------------
@@ -1293,12 +1306,34 @@
     'toggle-done': ({ id }) => {
       const t = task(id);
       if (t.status === 'done') {
+        if (!confirm(`Rouvrir la tâche « ${t.title} » ?`)) return;
+        // On revient à l'état d'avant la clôture (statut et avancement), sans le transformer en « En cours ».
         const prev = [...t.history].reverse().find((h) => h.status !== 'done');
-        recordProgress(t, Math.min(prev ? prev.progress : 0, 95), 'doing', 'Tâche rouverte');
+        recordProgress(t, prev ? Math.min(prev.progress, 95) : 0, prev ? prev.status : 'todo', 'Tâche rouverte');
+        commit('Tâche rouverte.');
+        return;
       }
-      else recordProgress(t, 100, 'done', '');
-      commit(t.status === 'done' ? 'Tâche terminée 🎉' : 'Tâche rouverte.');
-      if (t.status === 'done') vibrate(VIBRATE_SUCCESS);
+      const before = { progress: t.progress, status: t.status, updatedAt: t.updatedAt, entries: t.history.length };
+      recordProgress(t, 100, 'done', '');
+      commit();
+      vibrate(VIBRATE_SUCCESS);
+      // Un toucher involontaire s'annule sans laisser de trace dans l'historique.
+      toast('Tâche terminée 🎉', {
+        label: 'Annuler',
+        run: () => {
+          const cur = task(id);
+          if (!cur || cur.status !== 'done') return;
+          cur.history.splice(before.entries);
+          Object.assign(cur, { progress: before.progress, status: before.status, updatedAt: before.updatedAt });
+          commit('Annulé : la tâche reprend son état précédent.');
+        },
+      });
+    },
+    'test-vibration': () => {
+      if (!navigator.vibrate) { toast('Ce navigateur ne permet pas la vibration (utilisez Chrome sur Android).'); return; }
+      const ok = navigator.vibrate(400);
+      toast(ok ? "Vous n'avez rien senti ? Désactivez le mode silencieux et activez les « vibrations au toucher » dans les paramètres Android."
+        : "La vibration a été refusée par le téléphone.");
     },
     'new-person': () => personForm(),
     'edit-person': ({ id }) => personForm(person(id)),
@@ -1452,10 +1487,10 @@
 
   // Vibration à chaque sélection : boutons, liens, onglets, cases à cocher, listes et curseurs.
   document.addEventListener('click', (e) => {
-    if (e.target.closest('button:not(:disabled), a[href], [data-href], label')) vibrate(8);
+    if (e.target.closest('button:not(:disabled), a[href], [data-href], label')) vibrate(VIBRATE_TAP);
   }, true);
   document.addEventListener('change', (e) => {
-    if (e.target.matches('select, input[type="range"]')) vibrate(8);
+    if (e.target.matches('select, input[type="range"]')) vibrate(VIBRATE_TAP);
     if (e.target.matches('[data-pref="haptics"]')) {
       haptics = e.target.checked;
       try { localStorage.setItem(HAPTIC_KEY, haptics ? '1' : '0'); } catch (err) { /* ignoré */ }

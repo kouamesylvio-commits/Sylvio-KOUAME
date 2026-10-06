@@ -319,3 +319,9 @@ dialog::backdrop { background: rgba(10, 15, 25, .5); }
   font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--border);
 }
 .demo-banner .btn { flex: none; color: var(--risk); border-color: currentColor; background: transparent; }
+
+#toast.has-action { display: flex; align-items: center; gap: 14px; pointer-events: auto; width: max-content; white-space: nowrap; }
+.toast-action {
+  flex: none; min-height: 32px; padding: 0 4px; border: 0; background: none;
+  color: #93c5fd; font: inherit; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; cursor: pointer;
+}
